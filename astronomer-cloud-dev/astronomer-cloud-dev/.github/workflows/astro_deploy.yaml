@@ -1,0 +1,90 @@
+name: Astronomer CI - Deploy code (Multiple Branches)
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    types:
+      - closed
+    branches: [main]
+
+jobs:
+  deployment-type:
+    runs-on: ubuntu-latest
+    outputs:
+      DAGS_ONLY: ${{ steps.deployment-type.outputs.DAGS_ONLY }}
+    steps:
+    - name: checkout repo
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 2
+
+    # Determine if only DAGs have changes
+    - name: Get Deployment Type
+      id: deployment-type
+      run: |
+        files=$(git diff --name-only HEAD^..HEAD)
+        dags_only=1
+
+        for file in $files; do
+          if [[ $file != "dags/"* ]]; then
+            echo "$file is not a dag, triggering a full image build"
+            dags_only=0
+            break
+          fi
+        done
+
+        echo "DAGS_ONLY=$dags_only" >> $GITHUB_OUTPUT
+
+  dev-push:
+    if: github.ref == 'refs/heads/dev'
+    env:
+      ## Use Development API Token
+      ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN_DEV }}
+
+    runs-on: ubuntu-latest
+    needs: deployment-type
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v3
+
+      # If only DAGs changed do a DAG Deploy
+      - name: DAG Deploy to Astro (dev)
+        if: needs.deployment-type.outputs.DAGS_ONLY == 1
+        run: |
+          curl -sSL https://install.astronomer.io | sudo bash
+          astro deployment update --dag-deploy enable --force
+          astro deploy --dags
+
+      # If any other files changed do a regular Deploy
+      - name: Image and DAG Deploy to Astro (dev)
+        if: needs.deployment-type.outputs.DAGS_ONLY == 0
+        run: |
+          curl -sSL https://install.astronomer.io | sudo bash
+          astro deploy
+
+  prod-push:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    env:
+      ## Use Production API Token
+      ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN_PROD }}
+
+    runs-on: ubuntu-latest
+    needs: deployment-type
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v3
+
+      # If only DAGs changed do a DAG Deploy
+      - name: DAG Deploy to Astro (prod)
+        if: needs.deployment-type.outputs.DAGS_ONLY == 1
+        run: |
+          curl -sSL https://install.astronomer.io | sudo bash
+          astro deployment update --dag-deploy enable --force
+          astro deploy --dags
+
+      # If any other files changed do a regular Deploy
+      - name: Image and DAG Deploy to Astro (prod)
+        if: needs.deployment-type.outputs.DAGS_ONLY == 0
+        run: |
+          curl -sSL https://install.astronomer.io | sudo bash
+          astro deploy
